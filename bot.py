@@ -149,7 +149,7 @@ async def handle_download(message: Message, file_name):
     media = replied.document or replied.video or replied.audio or replied.photo
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
     global progress_msg
-    progress_msg = await message.reply_text("Downloading: {file_name}")
+    progress_msg = await message.reply_text(f"Downloading: {file_name}")
     last_percent = 0
     start_time = time.time()
 
@@ -184,7 +184,7 @@ async def handle_url_download(message: Message, file_name):
     url = message.text.split(" ",1)[1].strip()
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
     global progress_msg
-    progress_msg = await message.reply_text("Downloading: {file_name}")
+    progress_msg = await message.reply_text(f"Downloading: {file_name}")
     last_percent = 0
     start_time = time.time()
 
@@ -219,7 +219,7 @@ async def handle_url_download(message: Message, file_name):
 # ========= UPLOAD =========
 async def upload_file(message, file_path, file_name, progress_msg):
 
-    await safe_api_call(progress_msg.edit_text, "Uploading: {file_name}")
+    await safe_api_call(progress_msg.edit_text, f"Uploading: {file_name}")
     last_percent = 0
     start_time = time.time()
 
@@ -304,6 +304,10 @@ async def download_handler(client, message):
 
     queue.append(("telegram", message, queue_msg, file_name))
     await process_queue()
+    try:
+        await message.delete()
+    except:
+        pass
 
 @app.on_message(filters.command("url"))
 async def url_handler(client, message):
@@ -326,6 +330,10 @@ async def url_handler(client, message):
 
     queue.append(("url", message, queue_msg, file_name))
     await process_queue()
+    try:
+        await message.delete()
+    except:
+        pass
 
 queue = deque()
 @app.on_message(filters.command("queue"))
