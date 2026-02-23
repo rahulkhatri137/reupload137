@@ -1,6 +1,7 @@
 # Telegram ReUploader Bot
 
-Owner-only Telegram bot that downloads and reuploads them. For deployment on Termux
+Simple telegram bot to download from telegram or web and upload to telegram. 
+For deployment on Termux
 Powered by [@Bots137](https://t.me/Bots137)
 
 ## Features
@@ -15,6 +16,8 @@ Powered by [@Bots137](https://t.me/Bots137)
 - Supports streaming for videos
 - Parallel chunk upload
 - No concurrent heavy processing for low CPU/RAM footprint
+- Support custom file name
+- **Support Web download** now
 
 ## Requirements
 
@@ -63,6 +66,13 @@ Edit your Telegram credentials in bot.py:
 2.  Search @BotFather
 3.  Get your bot API token 
 
+</details>
+
+<details>
+<summary>Use custom file name</summary>
+
+- Telegram File: `/download custom_name.ext`
+- Web File: `/download URL | File_name.ext`
 </details>
 
 ## Commands via [@BotFather](https://t.me/BotFather)
