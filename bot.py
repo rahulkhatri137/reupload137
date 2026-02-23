@@ -45,7 +45,7 @@ def sanitize_filename(name):
     return name
     
 app = Client(
-    "refined_media_bot",
+    "reupload137_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
