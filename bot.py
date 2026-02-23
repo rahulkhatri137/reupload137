@@ -39,8 +39,13 @@ logging.getLogger("asyncio").setLevel(logging.ERROR)
 def log(tag, message):
     logger.info(f"[{tag}] {message}")
 
+def sanitize_filename(name):
+    name = name.strip()
+    name = name.replace("/", "_").replace("\\", "_")
+    return name
+    
 app = Client(
-    "refined_media_bot",
+    "reupload137_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
@@ -50,6 +55,7 @@ app = Client(
 queue = deque()
 processing = False
 current_task = None
+progress_msg = None
 
 # ========= FLOODWAIT =========
 async def safe_api_call(func, *args, **kwargs):
@@ -96,7 +102,7 @@ def random_thumbnail(video_path, thumb_path):
 
 # ========= QUEUE =========
 async def process_queue():
-    global processing, current_task
+    global processing, current_task, progress_msg
 
     if processing:
         return
@@ -121,6 +127,7 @@ async def process_queue():
             log("CANCEL", f"Cancelled: {file_name}")
             try:
                 await message.reply_text(f"Cancelled: {file_name}")
+                await progress_msg.delete()
             except: pass
         except Exception as e:
             log("ERROR", f"{file_name} -> {str(e)}")
@@ -141,8 +148,8 @@ async def handle_download(message: Message, file_name):
     replied = message.reply_to_message
     media = replied.document or replied.video or replied.audio or replied.photo
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
-
-    progress_msg = await message.reply_text("Downloading: 0%")
+    global progress_msg
+    progress_msg = await message.reply_text(f"Downloading: {file_name}")
     last_percent = 0
     start_time = time.time()
 
@@ -176,8 +183,8 @@ async def handle_download(message: Message, file_name):
 async def handle_url_download(message: Message, file_name):
     url = message.text.split(" ",1)[1].strip()
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
-
-    progress_msg = await message.reply_text("Downloading: 0%")
+    global progress_msg
+    progress_msg = await message.reply_text(f"Downloading: {file_name}")
     last_percent = 0
     start_time = time.time()
 
@@ -212,7 +219,7 @@ async def handle_url_download(message: Message, file_name):
 # ========= UPLOAD =========
 async def upload_file(message, file_path, file_name, progress_msg):
 
-    await safe_api_call(progress_msg.edit_text, "Uploading: 0%")
+    await safe_api_call(progress_msg.edit_text, f"Uploading: {file_name}")
     last_percent = 0
     start_time = time.time()
 
@@ -285,11 +292,22 @@ async def download_handler(client, message):
        else:
           file_name = f"file_{int(time.time())}"
 
+    parts = message.text.split(maxsplit=1)
+    if len(parts) > 1:
+        custom_name = sanitize_filename(parts[1])
+        file_name = custom_name
+    else:
+        file_name = file_name
+        
     queue_msg = await message.reply_text(f"Added to queue. Position: {len(queue)+1}")
     log("QUEUE", f"Added: {file_name} | Position: {len(queue)+1}")
 
     queue.append(("telegram", message, queue_msg, file_name))
     await process_queue()
+    try:
+        await message.delete()
+    except:
+        pass
 
 @app.on_message(filters.command("url"))
 async def url_handler(client, message):
@@ -298,29 +316,43 @@ async def url_handler(client, message):
     if len(queue) >= MAX_QUEUE:
         return await message.reply_text("Queue full (max 5 items).")
 
-    url = message.text.split(" ",1)[1].strip()
-    file_name = url.split("/")[-1].split("?")[0] or "file"
+    text = message.text.split(" ", 1)
+    if "|" in text[1]:
+        url_part, name_part = text[1].split("|", 1)
+        url = url_part.strip()
+        file_name = sanitize_filename(name_part.strip())
+    else:
+        url = text[1].strip()
+        file_name = url.split("/")[-1].split("?")[0] or f"file_{int(time.time())}"
 
     queue_msg = await message.reply_text(f"Added to queue. Position: {len(queue)+1}")
     log("QUEUE", f"Added: {file_name} | Position: {len(queue)+1}")
 
     queue.append(("url", message, queue_msg, file_name))
     await process_queue()
+    try:
+        await message.delete()
+    except:
+        pass
 
+queue = deque()
 @app.on_message(filters.command("queue"))
-async def show_queue(client: Client, message: Message):
+async def queue_handler(client, message):
+
     if message.from_user.id != OWNER_ID:
-        return
+        return await message.reply_text("❌ Unauthorized.")
 
     if not queue:
-        return await message.reply_text("Queue is empty.")
+        return await message.reply_text("Queue: {len(queue)}/{MAX_QUEUE}")
 
-    text = "Current Queue:\n"
-    for i, msg in enumerate(queue, start=1):
-        media = msg.reply_to_message
-        file = media.document or media.video or media.audio or media.photo
-        name = getattr(file, "file_name", "photo")
-        text += f"{i}. {name}\n"
+    text = ""
+    if queue:
+        text += "Queue:\n"
+        for i, item in enumerate(queue, start=1):
+            file_name = item[3]
+            text += f"{i}. {file_name}\n"
+
+    text += f"\nTotal: {len(queue)}/{MAX_QUEUE}"
 
     await message.reply_text(text)
 
@@ -333,7 +365,7 @@ async def cancel_handler(client, message):
         current_task.cancel()
         log("CANCEL", "Active task cancelled")
     queue.clear()
-    log("CANCEL", "Queue cleared")
+    await message.delete()
 
 log("INFO", "Bot started and ready")
 app.run()
