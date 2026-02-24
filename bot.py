@@ -38,6 +38,13 @@ async def aria2_rpc(method, params=None):
         async with session.post(ARIA2_RPC, json=payload) as r:
             return await r.json()
 
+def format_size(size):
+    size = int(size)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+
 # ========= LOGGING =========
 logging.basicConfig(
     level=logging.INFO,
@@ -184,7 +191,9 @@ async def handle_download(message: Message, file_name):
 
             await safe_api_call(
                 progress_msg.edit_text,
-                f"{file_name}\nDownloading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
+                f"{file_name}\n"
+                f"Downloading: {format_size(current)} / {format_size(total)} ({percent}%)\n"
+                f"Speed: {speed_mb:.2f} MB/s"
             )
 
     try:
@@ -262,7 +271,7 @@ async def download_with_aria2(url, file_path, progress_msg, message, file_name):
                 await safe_api_call(
                     progress_msg.edit_text,
                     f"{file_name}\n"
-                    f"Downloading: {percent:.1f}%\n"
+                    f"Downloading: {format_size(done)} / {format_size(total)} ({percent:.1f}%)\n"
                     f"Speed: {speed/1024/1024:.2f} MB/s"
                 )
 
@@ -307,7 +316,8 @@ async def upload_file(message, file_path, file_name, progress_msg):
 
             await safe_api_call(
                 progress_msg.edit_text,
-                f"{file_name}\nUploading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
+                f"{file_name}\nUploading: {format_size(done)} / {format_size(total)} ({percent:.1f}%)\n"
+                f"Speed: {speed_mb:.2f} MB/s"
             )
 
     width, height, duration = get_video_metadata(file_path)
@@ -406,6 +416,8 @@ async def queue_handler(client, message):
         return await message.reply_text("❌ Unauthorized.")
 
     if not queue:
+        await message.delete()
+        log("QUEUE", f"Queue: {len(queue)}/{MAX_QUEUE}")
         return await message.reply_text(f"Queue: {len(queue)}/{MAX_QUEUE}")
 
     text = ""
@@ -416,8 +428,9 @@ async def queue_handler(client, message):
             text += f"{i}. {file_name}\n"
 
     text += f"\nTotal: {len(queue)}/{MAX_QUEUE}"
-
+    log("QUEUE", f"Queue: {len(queue)}/{MAX_QUEUE}")
     await message.reply_text(text)
+    await message.delete()
 
 @app.on_message(filters.command("cancel"))
 async def cancel_handler(client, message):
@@ -425,7 +438,8 @@ async def cancel_handler(client, message):
     if message.from_user.id != OWNER_ID:
         return
     if not queue:
-        return await message.reply_text("No active task to cancel.")
+        log("CANCEL", "No active task to cancel.")
+        await message.reply_text("No active task to cancel.")
     if current_task and not current_task.done():
         current_task.cancel()
         log("CANCEL", "Active task cancelled")
