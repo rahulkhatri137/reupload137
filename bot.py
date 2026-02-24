@@ -7,12 +7,13 @@ import asyncio
 import subprocess
 import logging
 import sys
-import requests
 import time
 from collections import deque
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
+import aiohttp
+import json
 
 # ========= CONFIG =========
 API_ID = 123456
@@ -24,6 +25,25 @@ WORKERS = 12
 MAX_QUEUE = 5
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+ARIA2_RPC = "http://localhost:6800/jsonrpc"
+
+async def aria2_rpc(method, params=None):
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": f"aria2.{method}",
+        "params": params or []
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(ARIA2_RPC, json=payload) as r:
+            return await r.json()
+
+def format_size(size):
+    size = int(size)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
 
 # ========= LOGGING =========
 logging.basicConfig(
@@ -56,6 +76,7 @@ queue = deque()
 processing = False
 current_task = None
 progress_msg = None
+current_gid = None
 
 # ========= FLOODWAIT =========
 async def safe_api_call(func, *args, **kwargs):
@@ -92,7 +113,7 @@ def get_video_metadata(video_path):
 
 def random_thumbnail(video_path, thumb_path):
     _, _, duration = get_video_metadata(video_path)
-    timestamp = random.uniform(1, max(2, duration - 1))
+    timestamp = int(duration) / 2
     subprocess.run(
         ["ffmpeg","-ss",str(timestamp),"-i",video_path,
          "-vframes","1","-q:v","2",thumb_path],
@@ -113,15 +134,24 @@ async def process_queue():
         task_type, message, queue_msg, file_name = queue[0]
 
         log("PROCESS", f"Started: {file_name} | Type: {task_type.upper()}")
-
+        try:
+            await queue_msg.delete()
+        except:
+            pass
         try:
             if task_type == "telegram":
                 current_task = asyncio.create_task(handle_download(message, file_name))
             else:
                 current_task = asyncio.create_task(handle_url_download(message, file_name))
 
-            await current_task
-            log("COMPLETE", f"Done: {file_name}")
+            result = await current_task
+            if result is False:
+                log("FAILED", f"{file_name} failed")
+            else:
+                log("COMPLETE", f"Done: {file_name}")
+                try:
+                    await message.delete()
+                except: pass
 
         except asyncio.CancelledError:
             log("CANCEL", f"Cancelled: {file_name}")
@@ -131,11 +161,6 @@ async def process_queue():
             except: pass
         except Exception as e:
             log("ERROR", f"{file_name} -> {str(e)}")
-
-        try:
-            await queue_msg.delete()
-        except:
-            pass
 
         if queue:
            queue.popleft()
@@ -166,56 +191,111 @@ async def handle_download(message: Message, file_name):
 
             await safe_api_call(
                 progress_msg.edit_text,
-                f"{file_name}\nDownloading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
+                f"{file_name}\n"
+                f"Downloading: {format_size(current)} / {format_size(total)} ({percent}%)\n"
+                f"Speed: {speed_mb:.2f} MB/s"
             )
 
-    file_path = await safe_api_call(
+    try:
+        file_path = await safe_api_call(
         app.download_media,
         media,
         file_name=file_path,
         progress=progress
     )
+    except Exception as e:
+        log("ERROR", f"Download failed: {file_name}")
+        try:
+            await progress_msg.delete()
+            await message.reply_text(f"Download failed: {file_name}")
+        except:
+            pass
+        return False 
 
     log("DOWNLOAD", f"Completed: {file_name}")
     await upload_file(message, file_path, file_name, progress_msg)
+    return True
 
 # ========= URL DOWNLOAD =========
 async def handle_url_download(message: Message, file_name):
     url = message.text.split(" ",1)[1].strip()
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
-    global progress_msg
+    global progress_msg, current_gid
     progress_msg = await message.reply_text(f"Downloading: {file_name}")
-    last_percent = 0
-    start_time = time.time()
 
     log("DOWNLOAD", f"Starting: {file_name} (URL)")
 
-    response = requests.get(url, stream=True)
-    total = int(response.headers.get("content-length", 0))
-    downloaded = 0
-
-    with open(file_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=1024*1024):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-
-                if total > 0:
-                    percent = int(downloaded * 100 / total)
-                    if percent - last_percent >= 5:
-                        last_percent = percent
-                        elapsed = time.time() - start_time
-                        speed = downloaded / elapsed if elapsed > 0 else 0
-                        speed_mb = speed / (1024 * 1024)
-
-                        await safe_api_call(
-                            progress_msg.edit_text,
-                            f"{file_name}\nDownloading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
-                        )
+    success = await download_with_aria2(url, file_path, progress_msg, message, file_name)
+    if not success:
+        return False
 
     log("DOWNLOAD", f"Completed: {file_name}")
     await upload_file(message, file_path, file_name, progress_msg)
+    return True
 
+async def download_with_aria2(url, file_path, progress_msg, message, file_name):
+
+    global current_gid
+
+    try:
+        # add download
+        res = await aria2_rpc("addUri", [[url], {
+        "dir": os.path.abspath(os.path.dirname(file_path)),
+        "out": os.path.basename(file_path),
+        "continue": "true"
+        }])
+
+        current_gid = res["result"]
+        last_percent = 0
+
+        while True:
+            status = await aria2_rpc("tellStatus", [current_gid, [
+                "totalLength",
+                "completedLength",
+                "downloadSpeed",
+                "status",
+                "errorMessage"
+            ]])
+
+            info = status["result"]
+
+            total = int(info["totalLength"])
+            done = int(info["completedLength"])
+            speed = int(info["downloadSpeed"])
+            state = info["status"]
+
+            percent = (done / total * 100) if total else 0
+
+            if percent - last_percent >= 5:
+                last_percent = percent
+                await safe_api_call(
+                    progress_msg.edit_text,
+                    f"{file_name}\n"
+                    f"Downloading: {format_size(done)} / {format_size(total)} ({percent:.1f}%)\n"
+                    f"Speed: {speed/1024/1024:.2f} MB/s"
+                )
+
+            if state == "complete":
+                break
+
+            if state == "error":
+                raise Exception(info.get("errorMessage", "aria2 error"))
+
+            await asyncio.sleep(1)
+
+        return True
+
+    except Exception as e:
+        log("ERROR", f"{file_name} -> {e}")
+
+        try:
+            await progress_msg.delete()
+            await message.reply_text(f"Download failed: {file_name}")
+        except:
+            pass
+
+        return False
+        
 # ========= UPLOAD =========
 async def upload_file(message, file_path, file_name, progress_msg):
 
@@ -236,7 +316,8 @@ async def upload_file(message, file_path, file_name, progress_msg):
 
             await safe_api_call(
                 progress_msg.edit_text,
-                f"{file_name}\nUploading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
+                f"{file_name}\nUploading: {format_size(done)} / {format_size(total)} ({percent:.1f}%)\n"
+                f"Speed: {speed_mb:.2f} MB/s"
             )
 
     width, height, duration = get_video_metadata(file_path)
@@ -304,10 +385,6 @@ async def download_handler(client, message):
 
     queue.append(("telegram", message, queue_msg, file_name))
     await process_queue()
-    try:
-        await message.delete()
-    except:
-        pass
 
 @app.on_message(filters.command("url"))
 async def url_handler(client, message):
@@ -330,10 +407,6 @@ async def url_handler(client, message):
 
     queue.append(("url", message, queue_msg, file_name))
     await process_queue()
-    try:
-        await message.delete()
-    except:
-        pass
 
 queue = deque()
 @app.on_message(filters.command("queue"))
@@ -343,7 +416,9 @@ async def queue_handler(client, message):
         return await message.reply_text("❌ Unauthorized.")
 
     if not queue:
-        return await message.reply_text("Queue: {len(queue)}/{MAX_QUEUE}")
+        await message.delete()
+        log("QUEUE", f"Queue: {len(queue)}/{MAX_QUEUE}")
+        return await message.reply_text(f"Queue: {len(queue)}/{MAX_QUEUE}")
 
     text = ""
     if queue:
@@ -353,17 +428,27 @@ async def queue_handler(client, message):
             text += f"{i}. {file_name}\n"
 
     text += f"\nTotal: {len(queue)}/{MAX_QUEUE}"
-
+    log("QUEUE", f"Queue: {len(queue)}/{MAX_QUEUE}")
     await message.reply_text(text)
+    await message.delete()
 
 @app.on_message(filters.command("cancel"))
 async def cancel_handler(client, message):
-    global current_task, queue
+    global current_task, queue, current_gid
     if message.from_user.id != OWNER_ID:
         return
+    if not queue:
+        log("CANCEL", "No active task to cancel.")
+        await message.reply_text("No active task to cancel.")
     if current_task and not current_task.done():
         current_task.cancel()
         log("CANCEL", "Active task cancelled")
+    if current_gid:
+        try:
+            await aria2_rpc("remove", [current_gid])
+            await aria2_rpc("forceRemove", [current_gid])
+        except:
+            pass
     queue.clear()
     await message.delete()
 

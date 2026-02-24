@@ -1,7 +1,9 @@
 # Telegram ReUploader Bot
 
-Simple telegram bot to download from telegram or web and upload to telegram. 
-For deployment on Termux
+Simple telegram bot to download from telegram or web and upload to telegram.
+
+For deployment on **Termux**.
+
 Powered by [@Bots137](https://t.me/Bots137)
 
 ## Features
@@ -17,12 +19,13 @@ Powered by [@Bots137](https://t.me/Bots137)
 - Parallel chunk upload
 - No concurrent heavy processing for low CPU/RAM footprint
 - Support custom file name
-- **Support Web download** now
+- **Support Web download**
 
 ## Requirements
 
 -   Python 3.9+
 -   ffmpeg
+-   aria2
 
 ## Bot Setup
 
@@ -30,14 +33,32 @@ Powered by [@Bots137](https://t.me/Bots137)
 - Setup termux and install dependencies 
 ``` bash
 pkg update && pkg upgrade -y
-pkg install python ffmpeg git -y
+pkg install python ffmpeg git aria2 -y
 pip install --upgrade pip
-pip install pyrogram tgcrypto
+pip install pyrogram aiohttp tgcrypto
+```
+- Clone the Repo
+``` bash
+git clone https://github.com/rahulkhatri137/reupload137/ reupload137
+cd reupload137
 ```
 
 - Run bot:
 
 ``` bash
+bash bot.sh
+```
+or
+```
+aria2c \
+  --enable-rpc \
+  --rpc-listen-port=6800 \
+  --rpc-listen-all=false \
+  --rpc-allow-origin-all \
+  --max-connection-per-server=8 \
+  --split=8 \
+  --min-split-size=1M \
+  --daemon=true
 python bot.py
 ```
 
@@ -77,7 +98,8 @@ Edit your Telegram credentials in bot.py:
 
 ## Commands via [@BotFather](https://t.me/BotFather)
 ~~~
-download - Reply to file
+download - Download TG File (Reply to file)
+url - Download from web URL
 queue - Show queue
 cancel - Cancel current task
 ~~~
