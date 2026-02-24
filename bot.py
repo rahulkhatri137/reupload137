@@ -12,6 +12,8 @@ from collections import deque
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
+import aiohttp
+import json
 
 # ========= CONFIG =========
 API_ID = 123456
@@ -23,6 +25,18 @@ WORKERS = 12
 MAX_QUEUE = 5
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+ARIA2_RPC = "http://localhost:6800/jsonrpc"
+
+async def aria2_rpc(method, params=None):
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": f"aria2.{method}",
+        "params": params or []
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(ARIA2_RPC, json=payload) as r:
+            return await r.json()
 
 # ========= LOGGING =========
 logging.basicConfig(
@@ -55,7 +69,7 @@ queue = deque()
 processing = False
 current_task = None
 progress_msg = None
-aria2_process = None
+current_gid = None
 
 # ========= FLOODWAIT =========
 async def safe_api_call(func, *args, **kwargs):
@@ -123,11 +137,14 @@ async def process_queue():
             else:
                 current_task = asyncio.create_task(handle_url_download(message, file_name))
 
-            await current_task
-            log("COMPLETE", f"Done: {file_name}")
-            try:
-                await message.delete()
-            except: pass
+            result = await current_task
+            if result is False:
+                log("FAILED", f"{file_name} failed")
+            else:
+                log("COMPLETE", f"Done: {file_name}")
+                try:
+                    await message.delete()
+                except: pass
 
         except asyncio.CancelledError:
             log("CANCEL", f"Cancelled: {file_name}")
@@ -184,91 +201,91 @@ async def handle_download(message: Message, file_name):
             await message.reply_text(f"Download failed: {file_name}")
         except:
             pass
+        return False 
 
     log("DOWNLOAD", f"Completed: {file_name}")
     await upload_file(message, file_path, file_name, progress_msg)
+    return True
 
 # ========= URL DOWNLOAD =========
 async def handle_url_download(message: Message, file_name):
     url = message.text.split(" ",1)[1].strip()
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
-    global progress_msg, aria2_process
+    global progress_msg, current_gid
     progress_msg = await message.reply_text(f"Downloading: {file_name}")
 
     log("DOWNLOAD", f"Starting: {file_name} (URL)")
 
-    await download_with_aria2(url, file_path, progress_msg, message, file_name)
+    success = await download_with_aria2(url, file_path, progress_msg, message, file_name)
+    if not success:
+        return False
 
     log("DOWNLOAD", f"Completed: {file_name}")
     await upload_file(message, file_path, file_name, progress_msg)
+    return True
 
 async def download_with_aria2(url, file_path, progress_msg, message, file_name):
 
-    global aria2_process
-    command = [
-        "aria2c",
-        "-x", "8",                # connections
-        "-s", "8",                # split
-        "-k", "1M",               # chunk size
-        "--summary-interval=1",   # update every second
-        "--download-result=full",
-        "--console-log-level=notice",
-        "--dir", os.path.dirname(file_path),
-        "--out", os.path.basename(file_path),
-        url
-    ]
+    global current_gid
 
-    aria2_process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT
-    )
-    last_percent = 0
+    try:
+        # add download
+        res = await aria2_rpc("addUri", [[url], {
+        "dir": os.path.abspath(os.path.dirname(file_path)),
+        "out": os.path.basename(file_path),
+        "continue": "true"
+        }])
 
-    while True:
-        line = await aria2_process.stdout.readline()
-        if not line:
-            break
+        current_gid = res["result"]
+        last_percent = 0
 
-        line = line.decode().strip()
+        while True:
+            status = await aria2_rpc("tellStatus", [current_gid, [
+                "totalLength",
+                "completedLength",
+                "downloadSpeed",
+                "status",
+                "errorMessage"
+            ]])
 
-        if "DL:" in line and "%" in line:
-            try:
-                percent_part = line.split("%")[0]
-                percent = float(percent_part.split()[-1])
-                speed_part = line.split("DL:")[1].split()[0]
+            info = status["result"]
 
-                if speed_part.endswith("MiB/s"):
-                    speed = float(speed_part.replace("MiB/s", "")) * 1024 * 1024
-                elif speed_part.endswith("KiB/s"):
-                    speed = float(speed_part.replace("KiB/s", "")) * 1024
-                elif speed_part.endswith("B/s"):
-                    speed = float(speed_part.replace("B/s", ""))
-                else:
-                    speed = 0
-            
-                if percent - last_percent >= 5:
-                    last_percent = percent
-                    try:
-                        await progress_msg.edit(
-                            f"{os.path.basename(file_path)}\n"
-                            f"Downloading: {percent:.1f}%\n"
-                            f"Speed: {speed/1024/1024:.2f} MB/s"
-                        )
-                    except:
-                        pass
+            total = int(info["totalLength"])
+            done = int(info["completedLength"])
+            speed = int(info["downloadSpeed"])
+            state = info["status"]
 
-            except:
-                pass
+            percent = (done / total * 100) if total else 0
 
-    await aria2_process.wait()
+            if percent - last_percent >= 5:
+                last_percent = percent
+                await safe_api_call(
+                    progress_msg.edit_text,
+                    f"{file_name}\n"
+                    f"Downloading: {percent:.1f}%\n"
+                    f"Speed: {speed/1024/1024:.2f} MB/s"
+                )
 
-    if aria2_process.returncode != 0:
+            if state == "complete":
+                break
+
+            if state == "error":
+                raise Exception(info.get("errorMessage", "aria2 error"))
+
+            await asyncio.sleep(1)
+
+        return True
+
+    except Exception as e:
+        log("ERROR", f"{file_name} -> {e}")
+
         try:
-            await message.reply_text(f"Download failed: {file_name}")
             await progress_msg.delete()
-        except: pass
-        raise Exception("aria2 download failed")
+            await message.reply_text(f"Download failed: {file_name}")
+        except:
+            pass
+
+        return False
         
 # ========= UPLOAD =========
 async def upload_file(message, file_path, file_name, progress_msg):
@@ -389,7 +406,7 @@ async def queue_handler(client, message):
         return await message.reply_text("❌ Unauthorized.")
 
     if not queue:
-        return await message.reply_text("Queue: {len(queue)}/{MAX_QUEUE}")
+        return await message.reply_text(f"Queue: {len(queue)}/{MAX_QUEUE}")
 
     text = ""
     if queue:
@@ -404,14 +421,20 @@ async def queue_handler(client, message):
 
 @app.on_message(filters.command("cancel"))
 async def cancel_handler(client, message):
-    global current_task, queue, aria2_process
+    global current_task, queue, current_gid
     if message.from_user.id != OWNER_ID:
         return
+    if not queue:
+        return await message.reply_text("No active task to cancel.")
     if current_task and not current_task.done():
         current_task.cancel()
         log("CANCEL", "Active task cancelled")
-    if aria2_process:
-        aria2_process.kill()
+    if current_gid:
+        try:
+            await aria2_rpc("remove", [current_gid])
+            await aria2_rpc("forceRemove", [current_gid])
+        except:
+            pass
     queue.clear()
     await message.delete()
 
