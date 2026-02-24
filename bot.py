@@ -7,7 +7,6 @@ import asyncio
 import subprocess
 import logging
 import sys
-import requests
 import time
 from collections import deque
 from pyrogram import Client, filters
@@ -56,6 +55,7 @@ queue = deque()
 processing = False
 current_task = None
 progress_msg = None
+aria2_process = None
 
 # ========= FLOODWAIT =========
 async def safe_api_call(func, *args, **kwargs):
@@ -92,7 +92,7 @@ def get_video_metadata(video_path):
 
 def random_thumbnail(video_path, thumb_path):
     _, _, duration = get_video_metadata(video_path)
-    timestamp = random.uniform(1, max(2, duration - 1))
+    timestamp = int(duration) / 2
     subprocess.run(
         ["ffmpeg","-ss",str(timestamp),"-i",video_path,
          "-vframes","1","-q:v","2",thumb_path],
@@ -113,7 +113,10 @@ async def process_queue():
         task_type, message, queue_msg, file_name = queue[0]
 
         log("PROCESS", f"Started: {file_name} | Type: {task_type.upper()}")
-
+        try:
+            await queue_msg.delete()
+        except:
+            pass
         try:
             if task_type == "telegram":
                 current_task = asyncio.create_task(handle_download(message, file_name))
@@ -122,6 +125,9 @@ async def process_queue():
 
             await current_task
             log("COMPLETE", f"Done: {file_name}")
+            try:
+                await message.delete()
+            except: pass
 
         except asyncio.CancelledError:
             log("CANCEL", f"Cancelled: {file_name}")
@@ -131,11 +137,6 @@ async def process_queue():
             except: pass
         except Exception as e:
             log("ERROR", f"{file_name} -> {str(e)}")
-
-        try:
-            await queue_msg.delete()
-        except:
-            pass
 
         if queue:
            queue.popleft()
@@ -169,12 +170,20 @@ async def handle_download(message: Message, file_name):
                 f"{file_name}\nDownloading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
             )
 
-    file_path = await safe_api_call(
+    try:
+        file_path = await safe_api_call(
         app.download_media,
         media,
         file_name=file_path,
         progress=progress
     )
+    except Exception as e:
+        log("ERROR", f"Download failed: {file_name}")
+        try:
+            await progress_msg.delete()
+            await message.reply_text(f"Download failed: {file_name}")
+        except:
+            pass
 
     log("DOWNLOAD", f"Completed: {file_name}")
     await upload_file(message, file_path, file_name, progress_msg)
@@ -183,39 +192,84 @@ async def handle_download(message: Message, file_name):
 async def handle_url_download(message: Message, file_name):
     url = message.text.split(" ",1)[1].strip()
     file_path = os.path.join(DOWNLOAD_DIR, file_name)
-    global progress_msg
+    global progress_msg, aria2_process
     progress_msg = await message.reply_text(f"Downloading: {file_name}")
-    last_percent = 0
-    start_time = time.time()
 
     log("DOWNLOAD", f"Starting: {file_name} (URL)")
 
-    response = requests.get(url, stream=True)
-    total = int(response.headers.get("content-length", 0))
-    downloaded = 0
-
-    with open(file_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=1024*1024):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-
-                if total > 0:
-                    percent = int(downloaded * 100 / total)
-                    if percent - last_percent >= 5:
-                        last_percent = percent
-                        elapsed = time.time() - start_time
-                        speed = downloaded / elapsed if elapsed > 0 else 0
-                        speed_mb = speed / (1024 * 1024)
-
-                        await safe_api_call(
-                            progress_msg.edit_text,
-                            f"{file_name}\nDownloading: {percent}%\nSpeed: {speed_mb:.2f} MB/s"
-                        )
+    await download_with_aria2(url, file_path, progress_msg, message, file_name)
 
     log("DOWNLOAD", f"Completed: {file_name}")
     await upload_file(message, file_path, file_name, progress_msg)
 
+async def download_with_aria2(url, file_path, progress_msg, message, file_name):
+
+    global aria2_process
+    command = [
+        "aria2c",
+        "-x", "8",                # connections
+        "-s", "8",                # split
+        "-k", "1M",               # chunk size
+        "--summary-interval=1",   # update every second
+        "--download-result=full",
+        "--console-log-level=notice",
+        "--dir", os.path.dirname(file_path),
+        "--out", os.path.basename(file_path),
+        url
+    ]
+
+    aria2_process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
+    )
+    last_percent = 0
+
+    while True:
+        line = await aria2_process.stdout.readline()
+        if not line:
+            break
+
+        line = line.decode().strip()
+
+        if "DL:" in line and "%" in line:
+            try:
+                percent_part = line.split("%")[0]
+                percent = float(percent_part.split()[-1])
+                speed_part = line.split("DL:")[1].split()[0]
+
+                if speed_part.endswith("MiB/s"):
+                    speed = float(speed_part.replace("MiB/s", "")) * 1024 * 1024
+                elif speed_part.endswith("KiB/s"):
+                    speed = float(speed_part.replace("KiB/s", "")) * 1024
+                elif speed_part.endswith("B/s"):
+                    speed = float(speed_part.replace("B/s", ""))
+                else:
+                    speed = 0
+            
+                if percent - last_percent >= 5:
+                    last_percent = percent
+                    try:
+                        await progress_msg.edit(
+                            f"{os.path.basename(file_path)}\n"
+                            f"Downloading: {percent:.1f}%\n"
+                            f"Speed: {speed/1024/1024:.2f} MB/s"
+                        )
+                    except:
+                        pass
+
+            except:
+                pass
+
+    await aria2_process.wait()
+
+    if aria2_process.returncode != 0:
+        try:
+            await message.reply_text(f"Download failed: {file_name}")
+            await progress_msg.delete()
+        except: pass
+        raise Exception("aria2 download failed")
+        
 # ========= UPLOAD =========
 async def upload_file(message, file_path, file_name, progress_msg):
 
@@ -304,10 +358,6 @@ async def download_handler(client, message):
 
     queue.append(("telegram", message, queue_msg, file_name))
     await process_queue()
-    try:
-        await message.delete()
-    except:
-        pass
 
 @app.on_message(filters.command("url"))
 async def url_handler(client, message):
@@ -330,10 +380,6 @@ async def url_handler(client, message):
 
     queue.append(("url", message, queue_msg, file_name))
     await process_queue()
-    try:
-        await message.delete()
-    except:
-        pass
 
 queue = deque()
 @app.on_message(filters.command("queue"))
@@ -358,12 +404,14 @@ async def queue_handler(client, message):
 
 @app.on_message(filters.command("cancel"))
 async def cancel_handler(client, message):
-    global current_task, queue
+    global current_task, queue, aria2_process
     if message.from_user.id != OWNER_ID:
         return
     if current_task and not current_task.done():
         current_task.cancel()
         log("CANCEL", "Active task cancelled")
+    if aria2_process:
+        aria2_process.kill()
     queue.clear()
     await message.delete()
 
