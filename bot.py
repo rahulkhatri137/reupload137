@@ -18,7 +18,7 @@ from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 API_ID = 123456
 API_HASH = "API_HASH"
 BOT_TOKEN = "BOT_TOKEN"
-OWNER_ID = 123456789       
+OWNER_ID = 123456789
 # ---------------------
 
 logging.getLogger("hydrogram").setLevel(logging.CRITICAL)
@@ -28,9 +28,9 @@ def log_stage(stage, source, filename, extra=""):
     print(f"{timestamp} | {stage:<10} | {source:<5} | {filename} {extra}")
 
 def cleanup_dir():
-    extensions = ['*.mp4', '*.mkv', '*.zip', '*.jpg', '*.webm', '*.aria2', '*.parts']
+    extensions = ['*.mp4', ['*.mkv'], '*.zip', '*.jpg', '*.webm', '*.aria2', '*.parts']
     for ext in extensions:
-        for file in glob.glob(ext):
+        for file in glob.glob(str(ext)):
             try: os.remove(file)
             except: pass
 
@@ -76,7 +76,7 @@ async def progress_ui(current, total, message, start_time, action, user_id):
         raise StopIteration("USER_CANCELLED")
     now = time.time()
     diff = now - start_time
-    if round(diff % 4.00) == 0 or current == total:
+    if round(diff % 5.00) == 0 or current == total:
         percentage = (current * 100 / total) if total > 0 else 0
         speed = current / (diff if diff > 0 else 1)
         eta = (total - current) / speed if speed > 0 and total > 0 else 0
@@ -90,7 +90,7 @@ async def progress_ui(current, total, message, start_time, action, user_id):
 
 async def aria2_download(url, filename, message, user_id):
     start_time = time.time()
-    cmd = ["aria2c", "-x", "12", "-s", "12", "-k", "1M", "--summary-interval=3", "--console-log-level=notice", "-d", ".", "-o", filename, url]
+    cmd = ["aria2c", "-x", "12", "-s", "12", "-k", "1M", "--summary-interval=1", "--console-log-level=notice", "-d", ".", "-o", filename, url]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     while True:
         line = await process.stdout.readline()
@@ -116,7 +116,6 @@ async def worker():
         cleanup_dir()
         source = "Aria2" if url else "TG"
         
-        # Metadata check
         if url:
             orig_name, total_size = await get_url_info(url)
         else:
@@ -162,7 +161,6 @@ async def worker():
             try: await app.send_message(cmd_msg.chat.id, f"❌ **Error:** `{e}`")
             except: pass
         finally:
-
             if queue_name in waiting_list: waiting_list.remove(queue_name)
             if temp_path and os.path.exists(temp_path): os.remove(temp_path)
             if file_path and os.path.exists(file_path): os.remove(file_path)
@@ -183,20 +181,26 @@ async def unified_download(client, message):
     queue_display_name = ""
     parts = message.text.split(" ", 2)
     
+    # 1. Check for URL Download
     if len(parts) > 1 and (parts[1].startswith("http://") or parts[1].startswith("https://")):
         url = parts[1].strip()
         queue_display_name = url
-        if len(parts) > 2: custom_name = parts[2].strip()
-    
+        if len(parts) > 2:
+            custom_name = parts[2].strip()
+            queue_display_name = custom_name
+
+    # 2. Check for Telegram File Download
     elif message.reply_to_message:
         replied = message.reply_to_message
         if not (replied.document or replied.video or replied.audio):
             return await message.reply_text("❌ Reply to a valid file or provide a URL.")
         queue_display_name = getattr(replied.document or replied.video or replied.audio, "file_name", "Telegram_File")
-        if len(parts) > 1: custom_name = parts[1].strip()
+        if len(parts) > 1:
+            custom_name = message.text.split(None, 1)[1].strip()
+            queue_display_name = custom_name
             
     else:
-        return await message.reply_text("❓ **Usage:**\n• Reply to file: `/dl [name]`\n• Send URL: `/dl [url] [name]`")
+        return await message.reply_text("❓ **Usage:**\n• Reply to file: `/dl [custom name]`\n• Send URL: `/dl [url] [custom name]`")
 
     waiting_list.append(queue_display_name)
     pos = len(waiting_list)
