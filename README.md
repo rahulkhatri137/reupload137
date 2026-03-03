@@ -10,7 +10,9 @@ Powered by [@Bots137](https://t.me/Bots137)
 
 ## ✨ Key Features
 
-* **Unified Command**: Use `/dl` for both URLs and Telegram files.
+* **Download Command**: Use `/dl` for both URLs and Telegram files.
+* **Upload Command**: Use `/up` for uploading local files.
+* **Queue Command**: Use `/queue` for list of active and pending tasks.
 * **Minimalist Terminal**: Clean terminal logs for easy monitoring.
 * **Dual Engine**: 🌐 **Aria2** or 🔹 **TG**.
 * **Real-time Progress**: Precise progress bars with speed and ETA.
@@ -90,6 +92,7 @@ python bot.py
 | --- | --- | --- |
 | `/dl [url] [name]` | Direct URL download | Downloads from web using Aria2 engine. |
 | `/dl [name]` | Reply to a TG file | Downloads TG file and renames it. |
+| `/up [/path/file.mp4]` | Specify path to file | Uploads the local file. |
 | `/queue` | View status | Shows currently processing file and waiting list. |
 | `/cancel` | Terminate task | Stops the current active download and cleans up. |
 
