@@ -90,9 +90,9 @@ python bot.py
 
 | Command | Usage | Description |
 | --- | --- | --- |
-| `/dl [url] [name]` | Direct URL download | Downloads from web using Aria2 engine. |
-| `/dl [name]` | Reply to a TG file | Downloads TG file and renames it. |
-| `/up [/path/file.mp4]` | Specify path to file | Uploads the local file. |
+| `/dl [url] [name.mp4]` | Direct URL download | Downloads from web using Aria2 engine. |
+| `/dl [name.mp4]` | Reply to a TG file | Downloads TG file and renames it. |
+| `/up [/path/file.mp4]` | Specify path to file | Uploads the local file. (original file will be deleted) |
 | `/queue` | View status | Shows currently processing file and waiting list. |
 | `/cancel` | Terminate task | Stops the current active download and cleans up. |
 
