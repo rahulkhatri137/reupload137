@@ -104,7 +104,7 @@ async def aria2_download(url, filename, message, user_id):
             perc = int(match.group(1))
             total = active_tasks[user_id]['total_size']
             current = int((perc / 100) * total)
-            await progress_ui(current, total, message, start_time, "Downloading", user_id)
+            await progress_ui(current, total, message, start_time, "Downloading", user_id)       
     await process.wait()
     return filename
 
@@ -112,13 +112,18 @@ async def aria2_download(url, filename, message, user_id):
 
 async def worker():
     while True:
-        user_id, cmd_msg, status_msg, custom_name, url, queue_name = await task_queue.get()
-        cleanup_dir()
-        source = "Aria2" if url else "TG"
+        user_id, cmd_msg, status_msg, custom_name, source_val, queue_name, is_local = await task_queue.get()
         
-        if url:
-            orig_name, total_size = await get_url_info(url)
-        else:
+        # Determine Source Tag
+        if is_local:
+            source = "LOCAL"
+            orig_name = os.path.basename(source_val)
+            total_size = os.path.getsize(source_val)
+        elif source_val: 
+            source = "Aria2"
+            orig_name, total_size = await get_url_info(source_val)
+        else: 
+            source = "TG"
             replied = cmd_msg.reply_to_message
             orig_name = getattr(replied.document or replied.video or replied.audio, "file_name", "file.mp4")
             total_size = getattr(replied.document or replied.video or replied.audio, "file_size", 0)
@@ -131,9 +136,10 @@ async def worker():
         try:
             log_stage("DOWNLOAD", source, final_filename, "started")
             await status_msg.edit_text(f"🚀 **Processing {source}...**\n`{final_filename}`")
-            
-            if url:
-                file_path = await aria2_download(url, final_filename, status_msg, user_id)
+            if is_local:
+                file_path = source_val
+            elif source_val: 
+                file_path = await aria2_download(source_val, final_filename, status_msg, user_id)
             else:
                 temp_path = await app.download_media(cmd_msg.reply_to_message, progress=progress_ui, progress_args=(status_msg, time.time(), "Downloading", user_id))
                 file_path = os.path.join(os.path.dirname(temp_path), final_filename)
@@ -169,6 +175,7 @@ async def worker():
             except: pass
             active_tasks.pop(user_id, None)
             task_queue.task_done()
+            cleanup_dir()
 
 # --- COMMAND HANDLER ---
 
@@ -179,6 +186,7 @@ async def unified_download(client, message):
     url = None
     custom_name = None
     queue_display_name = ""
+    
     parts = message.text.split(" ", 2)
     
     # 1. Check for URL Download
@@ -194,12 +202,14 @@ async def unified_download(client, message):
         replied = message.reply_to_message
         if not (replied.document or replied.video or replied.audio):
             return await message.reply_text("❌ Reply to a valid file or provide a URL.")
+
         queue_display_name = getattr(replied.document or replied.video or replied.audio, "file_name", "Telegram_File")
         if len(parts) > 1:
             custom_name = message.text.split(None, 1)[1].strip()
             queue_display_name = custom_name
             
     else:
+        await message.delete()
         return await message.reply_text("❓ **Usage:**\n• Reply to file: `/dl [custom name]`\n• Send URL: `/dl [url] [custom name]`")
 
     waiting_list.append(queue_display_name)
@@ -209,7 +219,7 @@ async def unified_download(client, message):
     status_msg = await message.reply_text(status_text)
     
     log_stage("QUEUED", "SYS", custom_name or queue_display_name)
-    await task_queue.put((message.from_user.id, message, status_msg, custom_name, url, queue_display_name))
+    await task_queue.put((message.from_user.id, message, status_msg, custom_name, url, queue_display_name, False))
 
 @app.on_message(filters.command("queue"))
 async def cmd_queue(client, message):
@@ -226,6 +236,8 @@ async def cmd_cancel(client, message):
     if message.from_user.id == OWNER_ID and active_tasks:
         user_id = next(iter(active_tasks))
         active_tasks[user_id]["is_cancelled"] = True
+    else:
+            await message.reply_text("❌ **No task to cancel!**")
     await message.delete()
 
 @app.on_callback_query(filters.regex("^cancel_"))
@@ -236,6 +248,26 @@ async def cb_cancel(client, callback):
             active_tasks[uid]["is_cancelled"] = True
             await callback.answer("Cancelling task...", show_alert=True)
 
+@app.on_message(filters.command(["upload", "up"]) & filters.private)
+async def local_upload(client, message):
+    if message.from_user.id != OWNER_ID: return
+    if len(message.command) < 2:
+        await message.delete()
+        return await message.reply_text("❓ **Usage:** `/upload /sdcard/Movies/video.mp4`")
+    local_path = message.text.split(None, 1)[1]
+    if not os.path.exists(local_path):
+        return await message.reply_text("❌ **File not found!** Ensure the path is correct.")
+
+    custom_name = os.path.basename(local_path)
+    queue_display_name = custom_name
+    waiting_list.append(queue_display_name)
+    pos = len(waiting_list)
+    status_text = f"📥 **Queued (Local)** (Pos #{pos})\n`{queue_display_name}`"
+    status_msg = await message.reply_text(status_text)
+    
+    log_stage("QUEUED", "LOCAL", queue_display_name)
+    await task_queue.put((message.from_user.id, message, status_msg, custom_name, local_path, queue_display_name, True))
+    
 if __name__ == "__main__":
     print("-" * 35 + "\n🚀 REUPLOAD137 BOT STARTED\n" + "-" * 35)
     loop = asyncio.get_event_loop()
