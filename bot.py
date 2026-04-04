@@ -152,7 +152,7 @@ async def worker():
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(duration / 2), "-i", file_path, "-vframes", "1", "-q:v", "2", thumb_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             log_stage("UPLOAD", source, final_filename, "started")
-            await app.send_video(chat_id=cmd_msg.chat.id, video=file_path, duration=duration, width=width, height=height, thumb=thumb_path if os.path.exists(thumb_path) else None, caption=f"`{final_filename}`", supports_streaming=True, progress=progress_ui, progress_args=(status_msg, time.time(), "Uploading", user_id))
+            await app.send_video(chat_id=cmd_msg.chat.id, video=file_path, duration=duration, width=width, height=height, thumb=thumb_path if os.path.exists(thumb_path) else None, caption=f"__{final_filename}__", supports_streaming=True, progress=progress_ui, progress_args=(status_msg, time.time(), "Uploading", user_id))
             
             log_stage("COMPLETE", source, final_filename)
             try: await cmd_msg.delete()
@@ -186,6 +186,7 @@ async def unified_download(client, message):
     url = None
     custom_name = None
     queue_display_name = ""
+    
     parts = message.text.split(" ", 2)
     
     # 1. Check for URL Download
@@ -201,6 +202,7 @@ async def unified_download(client, message):
         replied = message.reply_to_message
         if not (replied.document or replied.video or replied.audio):
             return await message.reply_text("❌ Reply to a valid file or provide a URL.")
+
         queue_display_name = getattr(replied.document or replied.video or replied.audio, "file_name", "Telegram_File")
         if len(parts) > 1:
             custom_name = message.text.split(None, 1)[1].strip()
@@ -261,10 +263,40 @@ async def local_upload(client, message):
     waiting_list.append(queue_display_name)
     pos = len(waiting_list)
     status_text = f"📥 **Queued (Local)** (Pos #{pos})\n`{queue_display_name}`"
-    status_msg = await message.reply_text(status_text)
-    
+    status_msg = await message.reply_text(status_text)    
     log_stage("QUEUED", "LOCAL", queue_display_name)
     await task_queue.put((message.from_user.id, message, status_msg, custom_name, local_path, queue_display_name, True))
+
+@app.on_message(filters.command(["folder", "fdir"]) & filters.private)
+async def folder_upload(client, message):
+    if message.from_user.id != OWNER_ID: return    
+    if len(message.command) < 2:
+        await message.delete()
+        return await message.reply_text("❓ **Usage:** `/folder /sdcard/MyFolder`")
+    folder_path = message.text.split(None, 1)[1].strip()
+    if not os.path.isdir(folder_path):
+        return await message.reply_text("❌ **Folder not found!** Ensure the path is a directory.")
+    files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
+    if not files:
+        return await message.reply_text("📁 **Folder is empty.**")
+    files.sort()
+    count = 0
+    
+    for file_name in files:
+        full_path = os.path.join(folder_path, file_name)
+        # Filter for common media extensions if desired, or allow all
+        # if not file_name.lower().endswith(('.mp4', '.mkv', '.mov', '.webm')): continue
+        queue_display_name = file_name
+        waiting_list.append(queue_display_name)
+        pos = len(waiting_list)
+        if count == 0:
+            count_msg = await message.reply_text(f"📂 **Found {len(files)} files.** Adding to queue...")
+        status_text = f"📥 **Queued (Folder)** (Pos #{pos})\n`{queue_display_name}`"
+        status_msg = await message.reply_text(status_text)
+        log_stage("QUEUED", "FOLDER", queue_display_name)      
+        await task_queue.put((message.from_user.id, message, status_msg, file_name, full_path, queue_display_name, True))
+        count += 1
+    await count_msg.delete()
     
 if __name__ == "__main__":
     print("-" * 35 + "\n🚀 REUPLOAD137 BOT STARTED\n" + "-" * 35)
