@@ -11,7 +11,8 @@ Powered by [@Bots137](https://t.me/Bots137)
 ## ✨ Key Features
 
 * **Download Command**: Use `/dl` for both URLs and Telegram files.
-* **Upload Command**: Use `/up` for uploading local files.
+* **Upload Command**: Use `/up` (for files) and `/fdir` (for all files in directory) for uploading from local storage. <br>
+__*CAUTION*__ - Create copy in advance as original files will be deleted.
 * **Queue Command**: Use `/queue` for list of active and pending tasks.
 * **Minimalist Terminal**: Clean terminal logs for easy monitoring.
 * **Dual Engine**: 🌐 **Aria2** or 🔹 **TG**.
@@ -42,7 +43,7 @@ pkg install python ffmpeg aria2 git -y
 git clone https://github.com/rahulkhatri137/reupload137
 cd reupload137
 
-pip install hydrogram aiohttp
+pip install hydrogram aiohttp tgcrypto 
 
 ```
 
@@ -95,6 +96,7 @@ python bot.py
 | `/up [/path/file.mp4]` | Specify path to file | Uploads the local file. (original file will be deleted) |
 | `/queue` | View status | Shows currently processing file and waiting list. |
 | `/cancel` | Terminate task | Stops the current active download and cleans up. |
+| `/fdir [/path/folder]` | Specify path to folder | Uploads the local files inside the folder. (original files will be deleted) |
 
 ---
 
